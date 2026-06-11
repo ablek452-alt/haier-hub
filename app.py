@@ -1,95 +1,85 @@
+@@ -0,0 +1,84 @@
 import streamlit as st
-import json
-import re
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+import pandas as pd
+import requests
+import io
 
-st.set_page_config(page_title="Haier WarRoom Navigator", page_icon="🧭", layout="centered")
+st.set_page_config(page_title="Haier Material Hub", layout="wide", page_icon="☁️")
 
-# ==================== НАСТРОЙКИ GOOGLE ДИСКА ====================
-# ID твоей папки на Google Диске
-ROOT_FOLDER_ID = '1goxyDYuBE54147xUjCJjgPDJW-qJ3ad5'
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-# ================================================================
+st.title("☁️ Портал материалов Haier (СНГ)")
+st.markdown("Мгновенный поиск презентаций, PDF-файлов и графики напрямую из облачного реестра.")
+st.markdown("---")
 
-# Подключаем секреты напрямую через настройки Streamlit
-def get_drive_service():
+# Константы твоей экосистемы
+API_KEY = "AIzaSyAQy_9IMampwFE6-zUW0UyO_vFH45bXGEk"
+SHEET_ID = "122GipihFaGUp2AFyhy39_EKRVY5Rbuzg-TGGK8s5wro"
+SHEET_NAME = "Реестр_файлов"
+
+@st.cache_data(ttl=60)  # Кэш на 1 минуту, чтобы не спамить таблицу запросами
+def load_data_from_sheet():
+    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={SHEET_NAME}&key={API_KEY}"
     try:
-        # Берем данные ключа из секретов самого Streamlit
-        creds_dict = json.loads(st.secrets["textkey"])
-        creds = service_account.Credentials.from_service_account_file_dict(creds_dict, scopes=SCOPES)
-        return build('drive', 'v3', credentials=creds)
-    except Exception as e:
-        st.error(f"Ошибка авторизации Google: {e}")
+        response = requests.get(url)
+        if response.status_code == 200:
+            df = pd.read_csv(io.StringIO(response.text), header=None)
+            return df
+        return None
+    except:
         return None
 
-# Функция быстрого поиска прямо на Google Диске без всяких таблиц
-def search_files_on_drive(query_text):
-    service = get_drive_service()
-    if not service:
-        return []
-        
-    files_found = []
-    try:
-        # Ищем файлы внутри папки, у которых в имени есть наш запрос (например, 14979 или 2959)
-        # и которые не находятся в корзине
-        q = f"name contains '{query_text}' and trashed = false"
-        results = service.files().list(
-            q=q,
-            fields="files(name, webViewLink)",
-            pageSize=50
-        ).execute()
-        items = results.get('files', [])
-        
-        for item in items:
-            files_found.append({
-                'name': item['name'],
-                'link': item['webViewLink']
-            })
-    except Exception as e:
-        st.error(f"Ошибка поиска на Диске: {e}")
-        
-    return files_found
+df = load_data_from_sheet()
 
-def parse_excel_cell(cell_text):
-    """Очищает вставку из Excel от тегов контента"""
-    lines = cell_text.strip().split('\n')
-    return [re.sub(r'^\[.*?\]\s*', '', line).strip() for line in lines if line.strip()]
+if df is None or df.empty:
+    st.warning("⚠️ База данных реестра временно недоступна. Попробуйте обновить страницу.")
+    st.stop()
 
-st.title("🧭 Поиск файлов в Google Drive")
-st.markdown("Вставь ячейку из Excel или просто напиши номер модели / любые цифры.")
+search_query = st.text_input("🔍 Введите модель, серию или код (например: 14979, Flexis, X11, Coral):").strip()
 
-# Одно универсальное поле ввода
-search_query = st.text_area(
-    "Запрос:",
-    placeholder="Вставь скопированное или напиши цифры модели (например, 2959 или 14979)...",
-    height=120,
-    label_visibility="collapsed"
-)
-
-if st.button("Найти файлы на Диске", type="primary", use_container_width=True):
-    if not search_query.strip():
-        st.warning("Поле ввода пустое.")
-    else:
-        st.markdown("---")
+if search_query:
+    df_str = df.astype(str)
+    mask = df_str.apply(lambda row: row.str.contains(search_query, case=False, na=False)).any(axis=1)
+    results = df[mask]
+    
+    if not results.empty:
+        st.success(f"📊 Найдено материалов: {len(results)}")
         
-        # СЦЕНАРИЙ 1: Вставили структуру со скобками из Excel
-        if '[' in search_query and ']' in search_query:
-            clean_names = parse_excel_cell(search_query)
-            for name in clean_names:
-                results = search_files_on_drive(name)
-                if results:
-                    st.success(f"🔗 **[{name}]({results[0]['link']})**")
-                else:
-                    st.error(f"❌ **{name}** — *Файл не найден на Google Диске*")
-                    
-        # СЦЕНАРИЙ 2: Тот самый первый сквозной поиск по цифрам модели (14979, 2959)
-        else:
-            with st.spinner("Ищу на Google Диске..."):
-                results = search_files_on_drive(search_query.strip())
+        for idx, row in results.iterrows():
+            if idx == 0 and ("Имя" in str(row[1]) or "Name" in str(row[1])):
+                continue
                 
-            if results:
-                for file_item in results:
-                    st.success(f"🔗 **[{file_item['name']}]({file_item['link']})**")
-            else:
-                st.warning(f"По запросу '{search_query}' на Google Диске ничего не найдено.")
+            fname = str(row[1])
+            ext = str(row[2]).upper().strip()
+            folder_path = str(row[3])
+            drive_id = str(row[5]).strip()
+            backup_url = str(row[6]).strip()
+            
+            if not drive_id or drive_id == "nan" or len(drive_id) < 10:
+                if "file/d/" in backup_url:
+                    drive_id = backup_url.split("file/d/")[1].split("/")[0]
+                elif "id=" in backup_url:
+                    drive_id = backup_url.split("id=")[1].split("&")[0]
+            
+            f_type = f"📄 {ext}"
+            if ext in ['PNG', 'JPG', 'JPEG', 'WEBP']: f_type = "🖼 Фото"
+            elif ext in ['PPTX', 'PPT', 'PDF']: f_type = "📄 Презентация / PDF"
+            elif ext in ['ZIP', 'RAR']: f_type = "📦 Архив"
+            elif ext in ['XLSX', 'XLS']: f_type = "📊 Таблица"
+
+            view_link = f"https://drive.google.com/file/d/{drive_id}/view?usp=sharing"
+            download_link = f"https://drive.google.com/uc?export=download&id={drive_id}"
+            
+            with st.container():
+                col1, col2, col3 = st.columns([2, 5, 3])
+                with col1:
+                    st.markdown(f"**{f_type}**")
+                with col2:
+                    st.write(fname)
+                    st.caption(f"📂 Путь в облаке: {folder_path}")
+                with col3:
+                    if drive_id and drive_id != "nan" and len(drive_id) > 10:
+                        st.markdown(f"[👁 Открыть]({view_link}) | [📥 Скачать]({download_link})")
+                    else:
+                        st.caption("⚠️ Ссылка недоступна")
+                st.markdown("<hr style='margin:0.5em 0px;'>", unsafe_allow_html=True)
+    else:
+        st.warning("❌ В реестре ничего не найдено.")
