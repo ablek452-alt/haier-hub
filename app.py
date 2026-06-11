@@ -1,50 +1,74 @@
 import streamlit as st
 import pandas as pd
-import os
 import re
+import requests
+from io import StringIO
+
+# ==================== НАСТРОЙКИ СВЯЗИ С GOOGLE SHEETS ====================
+# Твоя ссылка на CSV-экспорт таблицы реестра (куда макрос складывает данные)
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/122GipihFaGUp2AFyhy39_EKRVY5Rbuzg-TGGK8s5wro/export?format=csv&gid=0"
+# =========================================================================
 
 st.set_page_config(page_title="Haier WarRoom Navigator", page_icon="🧭", layout="centered")
 
-# Жестко смотрим на локальный Excel-файл, как в Терминале
-EXCEL_FILE = "haier_file_registry.xlsx"
-
-@st.cache_data(ttl=5)  # Быстрое чтение файла
-def load_local_excel():
-    if not os.path.exists(EXCEL_FILE):
-        return []
+@st.cache_data(ttl=10)  # Данные обновляются из облака каждые 10 секунд
+def load_live_google_data():
     try:
-        df = pd.read_excel(EXCEL_FILE)
+        # Скачиваем таблицу напрямую из Google Sheets с жесткой кодировкой UTF-8
+        res = requests.get(GOOGLE_SHEET_CSV_URL)
+        res.encoding = 'utf-8'
+        
+        # Читаем текст как CSV-таблицу
+        df = pd.read_csv(StringIO(res.text))
+        if df.empty:
+            return []
+            
         df.columns = [str(c).strip() for c in df.columns]
         
-        # Названия колонок из твоего самого первого сканера
-        name_col = 'file_name' if 'file_name' in df.columns else df.columns[0]
-        link_col = 'drive_link' if 'drive_link' in df.columns else df.columns[1]
+        # Динамически определяем колонки: Имя файла (File Name) и Ссылка (Url/Link)
+        name_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+        link_col = df.columns[-1]
         
+        for col in df.columns:
+            col_lower = str(col).lower()
+            if 'name' in col_lower or 'имя' in col_lower:
+                name_col = col
+                break
+                
+        for col in df.columns:
+            if df[col].empty:
+                continue
+            first_val = str(df[col].iloc[0]).lower()
+            if 'http' in first_val or 'drive' in first_val or 'url' in str(col).lower() or 'ссылка' in str(col).lower():
+                link_col = col
+                break
+        
+        # Собираем данные в простой список словарей для сквозного поиска
         registry_data = []
         for _, row in df.iterrows():
             f_name = str(row[name_col]).strip()
             f_link = str(row[link_col]).strip()
-            if f_name and f_link:
+            if f_name and f_link and f_link.startswith('http'):
                 registry_data.append({'name': f_name, 'link': f_link})
         return registry_data
     except Exception:
         return []
 
-def parse_excel_cell(cell_text):
-    """Очищает многострочную вставку из Excel от тегов [📄 PDF·RU]"""
+def parse_excel_file_cell(cell_text):
+    """Очищает многострочную вставку из Excel от тегов контента типа [📄 PDF·RU]"""
     lines = cell_text.strip().split('\n')
     return [re.sub(r'^\[.*?\]\s*', '', line).strip() for line in lines if line.strip()]
 
-# Загружаем базу из локального Excel
-files_registry = load_local_excel()
+# Загружаем актуальную базу напрямую из Google
+files_registry = load_live_google_data()
 
 st.title("🧭 Поиск файлов в Google Drive")
-st.markdown("Вставь ячейку из Excel или просто напиши номер модели / цифры.")
+st.markdown("Вставь скопированную ячейку из Excel или просто напиши номер модели / любые цифры.")
 
-# Одно поле ввода
+# Одно универсальное поле ввода
 search_query = st.text_area(
     "Запрос:",
-    placeholder="Вставь скопированное или напиши цифры модели (например, 2959 или 14979)...",
+    placeholder="Вставь данные или введи цифры модели (например, 2959 или 14979)...",
     height=120,
     label_visibility="collapsed"
 )
@@ -53,14 +77,14 @@ if st.button("Найти файлы на Диске", type="primary", use_contai
     if not search_query.strip():
         st.warning("Поле ввода пустое.")
     elif not files_registry:
-        st.error(f"Файл {EXCEL_FILE} не найден в папке проекта или он пустой! Запусти сначала scanner.py на компьютере.")
+        st.error("Ошибка: База данных пуста или нет связи с Google Таблицей. Проверь ссылку.")
     else:
         st.markdown("---")
         query_clean = search_query.strip().lower()
         
-        # СЦЕНАРИЙ 1: Вставка многострочной ячейки из Excel
+        # СЦЕНАРИЙ 1: Пользователь вставил ячейку со структурой из Excel (есть квадратные скобки)
         if '[' in search_query and ']' in search_query:
-            clean_file_names = parse_excel_cell(search_query)
+            clean_file_names = parse_excel_file_cell(search_query)
             
             for name in clean_file_names:
                 found_link = None
@@ -72,16 +96,16 @@ if st.button("Найти файлы на Диске", type="primary", use_contai
                 if found_link:
                     st.success(f"🔗 **[{name}]({found_link})**")
                 else:
-                    # Частичный поиск, если точного нет
+                    # Если точного совпадения нет, ищем по части названия
                     found_part = False
                     for file_item in files_registry:
                         if name.lower() in file_item['name'].lower():
                             st.success(f"🔗 **[{file_item['name']}]({file_item['link']})**")
                             found_part = True
                     if not found_part:
-                        st.error(f"❌ **{name}** — *Файл не найден в реестре*")
+                        st.error(f"❌ **{name}** — *Файл не найден в облачном реестре*")
                         
-        # СЦЕНАРИЙ 2: Обычный сквозной поиск по цифрам модели (14979, 2959)
+        # СЦЕНАРИЙ 2: Тот самый первый, быстрый поиск по любым цифрам модели или куску текста
         else:
             found_any = False
             for file_item in files_registry:
@@ -90,4 +114,4 @@ if st.button("Найти файлы на Диске", type="primary", use_contai
                     found_any = True
             
             if not found_any:
-                st.warning(f"По запросу '{search_query}' ничего не найдено.")
+                st.warning(f"По запросу '{search_query}' ничего не найдено. Проверь, залит ли файл на Google Диск.")
