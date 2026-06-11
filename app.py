@@ -3,35 +3,32 @@ import pandas as pd
 import re
 
 # ==================== НАСТРОЙКИ СВЯЗИ С GOOGLE SHEETS ====================
-# 1. Открой свою Google Таблицу (куда Apps Script выгружает реестр файлов).
-# 2. Нажми кнопку "Поделиться" и сделай доступ "Все, у кого есть ссылка -> Читатель".
-# 3. Скопируй ссылку на таблицу и замени URL ниже. Важно: на конце должно быть /export?format=csv
+# Ссылка на твою Google Таблицу, куда Apps Script выгружает реестр файлов.
 GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/122GipihFaGUp2AFyhy39_EKRVY5Rbuzg-TGGK8s5wro/export?format=csv&gid=0"
 # =========================================================================
 
 st.set_page_config(page_title="Haier WarRoom Navigator", page_icon="🧭", layout="wide")
 
-# Функция загрузки реестра файлов из Google Sheets с кэшированием, чтобы сайт работал мгновенно
+# Функция загрузки реестра файлов из Google Sheets с кэшированием
 @st.cache_data(ttl=600)  # Данные обновляются из облака каждые 10 минут
 def load_google_files_registry():
     try:
         # Читаем CSV напрямую из Google Sheets
         df = pd.read_csv(GOOGLE_SHEET_CSV_URL)
-        # Приводим названия колонок к единому стандарту (зависит от настроек твоего Apps Script)
         df.columns = [c.strip() for c in df.columns]
         
-        # Строим словарь: имя_файла.lower() -> прямая_ссылка
-        # Проверяем, как называются колонки в Apps Script: 'Имя файла' и 'Ссылка'
+        # Названия колонок из твоего Гайд-скрипта: 'Имя файла' и 'Ссылка'
         name_col = 'Имя файла' if 'Имя файла' in df.columns else df.columns[1]
         link_col = 'Ссылка' if 'Ссылка' in df.columns else df.columns[6]
         
         registry = pd.Series(df[link_col].values, index=df[name_col].str.lower()).to_dict()
         return registry
     except Exception as e:
-        # Если таблица недоступна, выдаем базовую заглушку, чтобы приложение не падало
+        # ИСПРАВЛЕНО: Теперь все кавычки строго одинарные, код не упадет
         return {
-            'презентация_929a.pdf': 'https://drive.google.com",
-            'каталог_x11.pptx': 'https://drive.google.com'
+            'презентация_929a.pdf': 'https://drive.google.com',
+            'каталог_x11.pptx': 'https://drive.google.com',
+            'wm catalog 5.20.xlsx': 'https://drive.google.com'
         }
 
 # Базовая продуктовая матрица из твоего WAR ROOM
@@ -40,7 +37,7 @@ def load_products_data():
     mock_products = [
         {'SKU': 'CE0JHGE00', 'Модель': 'HW80-BP14929A', 'Бренд': 'Haier', 'Категория': 'Стиральная машина', 'Торговая сеть': 'Elite Electronics / Зигзаг', 'Статус': '🟢 Фото + RU'},
         {'SKU': 'CEADD1E00', 'Модель': 'HWD90-BP14929A', 'Бренд': 'Haier', 'Категория': 'Стирально-сушильная', 'Торговая сеть': 'Зигзаг', 'Статус': '🟢 Фото + RU'},
-        {'SKU': 'CEACW7E00', 'Модель': 'HW100-BD14397PGU1', 'Бренд': 'Haier', 'Категория': 'Стиральная машина', 'Торговая сеть': 'Зигзаг', 'Статус': '🟢 Полный комплект'},
+        {'SKU': 'CEACW7E00', 'Модель': 'HW100-BD14397PGU1', 'Бренд': 'Haier', 'Категория': 'Стиральная machine', 'Торговая сеть': 'Зигзаг', 'Статус': '🟢 Полный комплект'},
         {'SKU': 'CF067CE03', 'Модель': 'HD90-A3939', 'Бренд': 'Haier', 'Категория': 'Сушильная машина', 'Торговая сеть': 'Elite Electronics', 'Статус': '🔵 Только документы'},
         {'SKU': 'CE0J9VE01', 'Модель': 'BR 410B8-S', 'Бренд': 'Candy', 'Категория': 'Стиральная машина', 'Торговая сеть': 'Бомба', 'Статус': '🔵 Только документы'},
         {'SKU': 'CEADU2E00', 'Модель': 'EY 27SB7-S', 'Бренд': 'Candy', 'Категория': 'Стиральная машина', 'Торговая сеть': 'ЮгКонтракт', 'Статус': '🔵 Только документы'}
@@ -95,8 +92,7 @@ if st.button("Найти материалы", type="primary"):
             if link:
                 st.markdown(f"🔗 **[{name}]({link})** — [ Перейти к файлу на Диске ]({link})")
             else:
-                # Если файл записан в Excel, но физически в облако его еще не залили
-                st.markdown(f"❌ **{name}** — *Файл еще не загружен в облачную папку Диска*")
+                st.markdown(f"❌ **{name}** — *Файл еще не зарегистрирован в таблице макроса*")
                 
     # СЦЕНАРИЙ 2: Обычный поиск по модели или SKU
     else:
@@ -109,7 +105,6 @@ if st.button("Найти материалы", type="primary"):
         if df_filtered.empty:
             st.warning("Ничего не найдено. Проверь правильность ввода SKU или модели.")
         else:
-            # Выводим красивую интерактивную таблицу в Streamlit
             st.dataframe(
                 df_filtered, 
                 column_config={
