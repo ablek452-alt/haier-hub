@@ -1,84 +1,123 @@
 import streamlit as st
 import pandas as pd
-import requests
-import io
+import re
 
-st.set_page_config(page_title="Haier Material Hub", layout="wide", page_icon="☁️")
+# ==================== НАСТРОЙКИ СВЯЗИ С GOOGLE SHEETS ====================
+# 1. Открой свою Google Таблицу (куда Apps Script выгружает реестр файлов).
+# 2. Нажми кнопку "Поделиться" и сделай доступ "Все, у кого есть ссылка -> Читатель".
+# 3. Скопируй ссылку на таблицу и замени URL ниже. Важно: на конце должно быть /export?format=csv
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/122GipihFaGUp2AFyhy39_EKRVY5Rbuzg-TGGK8s5wro/export?format=csv&gid=0"
+# =========================================================================
 
-st.title("☁️ Портал материалов Haier (СНГ)")
-st.markdown("Мгновенный поиск презентаций, PDF-файлов и графики напрямую из облачного реестра.")
-st.markdown("---")
+st.set_page_config(page_title="Haier WarRoom Navigator", page_icon="🧭", layout="wide")
 
-# Константы твоей экосистемы
-API_KEY = "AIzaSyAQy_9IMampwFE6-zUW0UyO_vFH45bXGEk"
-SHEET_ID = "122GipihFaGUp2AFyhy39_EKRVY5Rbuzg-TGGK8s5wro"
-SHEET_NAME = "Реестр_файлов"
-
-@st.cache_data(ttl=60)  # Кэш на 1 минуту, чтобы не спамить таблицу запросами
-def load_data_from_sheet():
-    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={SHEET_NAME}&key={API_KEY}"
+# Функция загрузки реестра файлов из Google Sheets с кэшированием, чтобы сайт работал мгновенно
+@st.cache_data(ttl=600)  # Данные обновляются из облака каждые 10 минут
+def load_google_files_registry():
     try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            df = pd.read_csv(io.StringIO(response.text), header=None)
-            return df
-        return None
-    except:
-        return None
-
-df = load_data_from_sheet()
-
-if df is None or df.empty:
-    st.warning("⚠️ База данных реестра временно недоступна. Попробуйте обновить страницу.")
-    st.stop()
-
-search_query = st.text_input("🔍 Введите модель, серию или код (например: 14979, Flexis, X11, Coral):").strip()
-
-if search_query:
-    df_str = df.astype(str)
-    mask = df_str.apply(lambda row: row.str.contains(search_query, case=False, na=False)).any(axis=1)
-    results = df[mask]
-    
-    if not results.empty:
-        st.success(f"📊 Найдено материалов: {len(results)}")
+        # Читаем CSV напрямую из Google Sheets
+        df = pd.read_csv(GOOGLE_SHEET_CSV_URL)
+        # Приводим названия колонок к единому стандарту (зависит от настроек твоего Apps Script)
+        df.columns = [c.strip() for c in df.columns]
         
-        for idx, row in results.iterrows():
-            if idx == 0 and ("Имя" in str(row[1]) or "Name" in str(row[1])):
-                continue
-                
-            fname = str(row[1])
-            ext = str(row[2]).upper().strip()
-            folder_path = str(row[3])
-            drive_id = str(row[5]).strip()
-            backup_url = str(row[6]).strip()
-            
-            if not drive_id or drive_id == "nan" or len(drive_id) < 10:
-                if "file/d/" in backup_url:
-                    drive_id = backup_url.split("file/d/")[1].split("/")[0]
-                elif "id=" in backup_url:
-                    drive_id = backup_url.split("id=")[1].split("&")[0]
-            
-            f_type = f"📄 {ext}"
-            if ext in ['PNG', 'JPG', 'JPEG', 'WEBP']: f_type = "🖼 Фото"
-            elif ext in ['PPTX', 'PPT', 'PDF']: f_type = "📄 Презентация / PDF"
-            elif ext in ['ZIP', 'RAR']: f_type = "📦 Архив"
-            elif ext in ['XLSX', 'XLS']: f_type = "📊 Таблица"
+        # Строим словарь: имя_файла.lower() -> прямая_ссылка
+        # Проверяем, как называются колонки в Apps Script: 'Имя файла' и 'Ссылка'
+        name_col = 'Имя файла' if 'Имя файла' in df.columns else df.columns[1]
+        link_col = 'Ссылка' if 'Ссылка' in df.columns else df.columns[6]
+        
+        registry = pd.Series(df[link_col].values, index=df[name_col].str.lower()).to_dict()
+        return registry
+    except Exception as e:
+        # Если таблица недоступна, выдаем базовую заглушку, чтобы приложение не падало
+        return {
+            'презентация_929a.pdf': 'https://drive.google.com",
+            'каталог_x11.pptx': 'https://drive.google.com'
+        }
 
-            view_link = f"https://drive.google.com/file/d/{drive_id}/view?usp=sharing"
-            download_link = f"https://drive.google.com/uc?export=download&id={drive_id}"
+# Базовая продуктовая матрица из твоего WAR ROOM
+@st.cache_data
+def load_products_data():
+    mock_products = [
+        {'SKU': 'CE0JHGE00', 'Модель': 'HW80-BP14929A', 'Бренд': 'Haier', 'Категория': 'Стиральная машина', 'Торговая сеть': 'Elite Electronics / Зигзаг', 'Статус': '🟢 Фото + RU'},
+        {'SKU': 'CEADD1E00', 'Модель': 'HWD90-BP14929A', 'Бренд': 'Haier', 'Категория': 'Стирально-сушильная', 'Торговая сеть': 'Зигзаг', 'Статус': '🟢 Фото + RU'},
+        {'SKU': 'CEACW7E00', 'Модель': 'HW100-BD14397PGU1', 'Бренд': 'Haier', 'Категория': 'Стиральная машина', 'Торговая сеть': 'Зигзаг', 'Статус': '🟢 Полный комплект'},
+        {'SKU': 'CF067CE03', 'Модель': 'HD90-A3939', 'Бренд': 'Haier', 'Категория': 'Сушильная машина', 'Торговая сеть': 'Elite Electronics', 'Статус': '🔵 Только документы'},
+        {'SKU': 'CE0J9VE01', 'Модель': 'BR 410B8-S', 'Бренд': 'Candy', 'Категория': 'Стиральная машина', 'Торговая сеть': 'Бомба', 'Статус': '🔵 Только документы'},
+        {'SKU': 'CEADU2E00', 'Модель': 'EY 27SB7-S', 'Бренд': 'Candy', 'Категория': 'Стиральная машина', 'Торговая сеть': 'ЮгКонтракт', 'Статус': '🔵 Только документы'}
+    ]
+    return pd.DataFrame(mock_products)
+
+def parse_excel_file_cell(cell_text):
+    """Очищает скопированный текст из Excel от тегов контента"""
+    lines = cell_text.strip().split('\n')
+    return [re.sub(r'^\[.*?\]\s*', '', line).strip() for line in lines if line.strip()]
+
+# Инициализация баз данных
+files_registry = load_google_files_registry()
+products_df = load_products_data()
+
+# --- ИНТЕРФЕЙС STREAMLIT ---
+st.title("🧭 Поисковый навигатор Haier / Candy")
+st.markdown("Инструмент быстрой генерации ссылок на Google Диск на основе данных навигатора WAR ROOM.")
+
+# Блок фильтров
+row1_col1, row1_col2 = st.columns([1, 2])
+
+with row1_col1:
+    networks = ["-- Все торговые сети --", "Elite Electronics", "Зигзаг", "Бомба", "ЮгКонтракт"]
+    selected_network = st.selectbox("1. Выбери торговую сеть клиента:", networks)
+
+with row1_col2:
+    search_query = st.text_area(
+        "2. Введи SKU/модель или вставь скопированную ячейку файлов из Excel:",
+        placeholder="Пример ячейки:\n[📄 PDF·RU] Презентация_929A.pdf\n[📸 JPG · 12 шт] HW70-B12929",
+        height=100
+    )
+
+if st.button("Найти материалы", type="primary"):
+    st.markdown("---")
+    st.subheader("📋 Результаты обработки запроса")
+    
+    # Фильтруем ассортимент по сети, если она выбрана
+    df_filtered = products_df.copy()
+    if selected_network != "-- Все торговые сети --":
+        df_filtered = df_filtered[df_filtered['Торговая сеть'].str.contains(selected_network, case=False, na=False)]
+    
+    # СЦЕНАРИЙ 1: Пользователь вставил ячейку со списком файлов из Excel (есть квадратные скобки)
+    if '[' in search_query and ']' in search_query:
+        st.info("💡 Обнаружена вставка ячейки структуры файлов. Генерирую прямые ссылки на Google Диск:")
+        clean_file_names = parse_excel_file_cell(search_query)
+        
+        for name in clean_file_names:
+            # Ищем ссылку в реестре Google Таблицы
+            link = files_registry.get(name.lower(), None)
             
-            with st.container():
-                col1, col2, col3 = st.columns([2, 5, 3])
-                with col1:
-                    st.markdown(f"**{f_type}**")
-                with col2:
-                    st.write(fname)
-                    st.caption(f"📂 Путь в облаке: {folder_path}")
-                with col3:
-                    if drive_id and drive_id != "nan" and len(drive_id) > 10:
-                        st.markdown(f"[👁 Открыть]({view_link}) | [📥 Скачать]({download_link})")
-                    else:
-                        st.caption("⚠️ Ссылка недоступна")
-                st.markdown("<hr style='margin:0.5em 0px;'>", unsafe_allow_html=True)
+            if link:
+                st.markdown(f"🔗 **[{name}]({link})** — [ Перейти к файлу на Диске ]({link})")
+            else:
+                # Если файл записан в Excel, но физически в облако его еще не залили
+                st.markdown(f"❌ **{name}** — *Файл еще не загружен в облачную папку Диска*")
+                
+    # СЦЕНАРИЙ 2: Обычный поиск по модели или SKU
     else:
-        st.warning("❌ В реестре ничего не найдено.")
+        if search_query:
+            df_filtered = df_filtered[
+                df_filtered['SKU'].str.contains(search_query, case=False, na=False) |
+                df_filtered['Модель'].str.contains(search_query, case=False, na=False)
+            ]
+        
+        if df_filtered.empty:
+            st.warning("Ничего не найдено. Проверь правильность ввода SKU или модели.")
+        else:
+            # Выводим красивую интерактивную таблицу в Streamlit
+            st.dataframe(
+                df_filtered, 
+                column_config={
+                    "SKU": "SKU товара",
+                    "Модель": "Модель техники",
+                    "Торговая сеть": "Торговая сеть (Клиент)",
+                    "Статус": "Статус контента"
+                },
+                use_container_width=True,
+                hide_index=True
+            )
