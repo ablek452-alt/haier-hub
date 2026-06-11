@@ -8,24 +8,40 @@ GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/122GipihFaGUp2AFy
 
 st.set_page_config(page_title="Haier WarRoom Navigator", page_icon="🧭", layout="centered")
 
-# Функция загрузки реестра файлов из Google Sheets с кэшированием
-@st.cache_data(ttl=60)  # Сброс кэша каждую минуту, чтобы новые файлы сразу находились
+@st.cache_data(ttl=30)  # Обновление каждую минуту
 def load_google_files_registry():
     try:
+        # Качаем таблицу из облака
         df = pd.read_csv(GOOGLE_SHEET_CSV_URL)
-        df.columns = [c.strip() for c in df.columns]
-        
-        # Индексы колонок: 1-я — Имя файла, 6-я — Ссылка
-        name_col = 'Имя файла' if 'Имя файла' in df.columns else df.columns[1]
-        link_col = 'Ссылка' if 'Ссылка' in df.columns else df.columns[6]
-        
-        # Создаем чистый плоский словарь {имя_файла.lower(): ссылка}
+        if df.empty:
+            return {}
+            
         registry = {}
+        
+        # Автоматически находим нужные колонки, не привязываясь к языку
+        # Имя файла — это всегда то, что идет в начале (1-я или 2-я колонка)
+        name_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+        for col in df.columns:
+            if 'name' in str(col).lower() or 'имя' in str(col).lower():
+                name_col = col
+                break
+                
+        # Ссылку ищем по содержимому: где есть веб-адреса
+        link_col = df.columns[-1]
+        for col in df.columns:
+            # Проверяем первую живую строчку в колонке на наличие ссылки
+            first_val = str(df[col].iloc[0]).lower() if not df[col].empty else ""
+            if 'http' in first_val or 'drive' in first_val or 'url' in str(col).lower() or 'ссылка' in str(col).lower():
+                link_col = col
+                break
+
+        # Забиваем данные в чистый словарь для моментального сквозного поиска
         for _, row in df.iterrows():
             f_name = str(row[name_col]).strip()
             f_link = str(row[link_col]).strip()
-            if f_name and f_link:
+            if f_name and f_link and f_link.startswith('http'):
                 registry[f_name.lower()] = f_link
+                
         return registry
     except Exception:
         return {}
@@ -44,7 +60,7 @@ st.markdown("Вставь ячейку из Excel или просто напиш
 # Одно универсальное поле ввода
 search_query = st.text_area(
     "Запрос:",
-    placeholder="Вставь скопированное или напиши цифры модели...",
+    placeholder="Вставь скопированное или напиши цифры модели (например, 2959)...",
     height=120,
     label_visibility="collapsed"
 )
@@ -74,7 +90,7 @@ if st.button("Найти файлы на Диске", type="primary", use_contai
                     if not found_part:
                         st.error(f"❌ **{name}** — *Файл не найден в реестре*")
                         
-        # СЦЕНАРИЙ 2: Тот самый первый сквозной поиск по цифрам / части слова
+        # СЦЕНАРИЙ 2: Обычный сквозной поиск по цифрам / части слова
         else:
             found_any = False
             for f_name, f_link in files_registry.items():
